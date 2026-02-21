@@ -1,0 +1,97 @@
+#Copy of Code - Transformer Optimized
+import pandas
+import numpy as np
+import tensorflow as tf
+
+# download data
+dataframe = pandas.read_csv('https://raw.githubusercontent.com/bryankolaczkowski/ALS3200C/main/mbiome.data.csv')
+
+# create train-validate split
+train_dataframe = dataframe.sample(frac=0.8, random_state=827847)
+valid_dataframe = dataframe.drop(train_dataframe.index)
+
+# extract explanatory variables
+dta_ids = [ x for x in dataframe.columns if x.find('DTA') == 0 ]
+train_x = train_dataframe[dta_ids].to_numpy()
+valid_x = valid_dataframe[dta_ids].to_numpy()
+
+# add 'location' to sequence data
+loc = np.linspace(start=-2.5, stop=+2.5, num=train_x.shape[1])
+train_x = np.stack([ train_x, np.array([loc]*train_x.shape[0]) ], axis=-1)
+valid_x = np.stack([ valid_x, np.array([loc]*valid_x.shape[0]) ], axis=-1)
+
+# extract labels
+train_y = train_dataframe['LBL0'].to_numpy()
+valid_y = valid_dataframe['LBL0'].to_numpy()
+
+# package data into tensorflow dataset
+train_data = tf.data.Dataset.from_tensor_slices((train_x, train_y)).batch(32)
+valid_data = tf.data.Dataset.from_tensor_slices((valid_x, valid_y)).batch(32)
+
+## build model using functional api
+repdim = 8  # set internal data representation dimensionality
+
+# input and linear projection
+inlayer = tf.keras.Input(shape=(256,2))
+proj = tf.keras.layers.Dense(units=repdim)(inlayer)
+# multi-head attention block
+mha1 = tf.keras.layers.MultiHeadAttention(num_heads=2, key_dim=repdim)(proj,proj,proj)
+res1 = tf.keras.layers.Add()([proj, mha1])
+nrm1 = tf.keras.layers.LayerNormalization()(res1)
+# feed-forward block
+ffa1 = tf.keras.layers.Dense(units=repdim, activation=tf.keras.activations.relu)(nrm1)
+ffb1 = tf.keras.layers.Dense(units=repdim)(ffa1)
+res2 = tf.keras.layers.Add()([nrm1, ffb1])
+nrm2 = tf.keras.layers.LayerNormalization()(res2)
+nrm2 = tf.keras.layers.Dropout(0.2)(nrm2)
+# Multi-head block 2
+mha2 = tf.keras.layers.MultiHeadAttention(num_heads=2, key_dim=repdim)(nrm2,nrm2,nrm2)
+res3 = tf.keras.layers.Add()([nrm2, mha2])
+nrm3 = tf.keras.layers.LayerNormalization()(res3)
+# feed-forward block 2
+ffa2 = tf.keras.layers.Dense(units=repdim, activation=tf.keras.activations.relu)(nrm3)
+ffb2 = tf.keras.layers.Dense(units=repdim)(ffa2)
+res4 = tf.keras.layers.Add()([nrm3, ffb2])
+nrm4 = tf.keras.layers.LayerNormalization()(res4)
+nrm4 = tf.keras.layers.Dropout(0.2)(nrm4)
+# Multi-head block 3
+mha3 = tf.keras.layers.MultiHeadAttention(num_heads=2, key_dim=repdim)(nrm4,nrm4,nrm4)
+res5 = tf.keras.layers.Add()([nrm4, mha3])
+nrm5 = tf.keras.layers.LayerNormalization()(res5)
+# feed-forward block 3
+ffa3 = tf.keras.layers.Dense(units=repdim, activation=tf.keras.activations.relu)(nrm5)
+ffb3 = tf.keras.layers.Dense(units=repdim)(ffa3)
+res5 = tf.keras.layers.Add()([nrm5, ffb3])
+nrm6 = tf.keras.layers.LayerNormalization()(res5)
+nrm6 = tf.keras.layers.Dropout(0.2)(nrm6)
+# Multi-head block 4
+mha4 = tf.keras.layers.MultiHeadAttention(num_heads=2, key_dim=repdim)(nrm6,nrm6,nrm6)
+res7 = tf.keras.layers.Add()([nrm6, mha4])
+nrm7 = tf.keras.layers.LayerNormalization()(res7)
+# feed-forward block 4
+ffa4 = tf.keras.layers.Dense(units=repdim, activation=tf.keras.activations.relu)(nrm7)
+ffb4 = tf.keras.layers.Dense(units=repdim)(ffa4)
+res8 = tf.keras.layers.Add()([nrm7, ffb4])
+nrm8 = tf.keras.layers.LayerNormalization()(res8)
+nrm8 = tf.keras.layers.Dropout(0.2)(nrm8)
+# classification block
+flt = tf.keras.layers.Flatten()(nrm8)
+outlayer = tf.keras.layers.Dense(units=1, activation=tf.keras.activations.sigmoid)(flt)
+
+model = tf.keras.Model(inputs=inlayer, outputs=outlayer)
+model.summary()
+
+## compile model
+model.compile(optimizer=tf.keras.optimizers.Adam(),
+              loss=tf.keras.losses.BinaryCrossentropy(),
+              metrics=['accuracy'])
+
+early_stop = tf.keras.callbacks.EarlyStopping(
+    monitor='val_loss',
+    patience=5,
+    min_delta=0.0001,
+    restore_best_weights=True
+)
+
+#model Fit
+model.fit(train_data, epochs=30, validation_data=valid_data, callbacks=[early_stop])
